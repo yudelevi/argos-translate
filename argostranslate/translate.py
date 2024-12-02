@@ -492,9 +492,9 @@ def apply_packaged_translation(
         return_scores=True,
         asynchronous=True
     )
-    
+
     # Wait for and collect all results
-    translated_batches = async_results.result()
+    translated_batches = [ async_result.result() for async_result in async_results ]
     info("translated_batches", translated_batches)
 
     # Build hypotheses
