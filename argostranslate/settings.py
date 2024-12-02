@@ -169,6 +169,7 @@ device = get_setting("ARGOS_DEVICE_TYPE", "cpu")
 inter_threads = int(get_setting("ARGOS_INTER_THREADS", "1"))
 intra_threads = int(get_setting("ARGOS_INTRA_THREADS", "0"))
 
+batch_size = int(get_setting("ARGOS_BATCH_SIZE", "32"))
 
 class ModelProvider(Enum):
     OPENNMT = 0
