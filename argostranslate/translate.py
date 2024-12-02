@@ -480,7 +480,8 @@ def apply_packaged_translation(
     if pkg.target_prefix != "":
         target_prefix = [[pkg.target_prefix]] * len(tokenized)
 
-    translated_batches = translator.translate_batch(
+    # Queue all translations asynchronously
+    async_results = translator.translate_batch(
         tokenized,
         target_prefix=target_prefix,
         replace_unknowns=True,
@@ -489,7 +490,11 @@ def apply_packaged_translation(
         num_hypotheses=num_hypotheses,
         length_penalty=0.2,
         return_scores=True,
+        asynchronous=True
     )
+    
+    # Wait for and collect all results
+    translated_batches = async_results.result()
     info("translated_batches", translated_batches)
 
     # Build hypotheses
