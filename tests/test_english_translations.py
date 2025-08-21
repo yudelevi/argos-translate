@@ -168,6 +168,111 @@ class TestEnglishToX:
             pytest.fail(f"'{phrase_name}' failed on English→X pairs:\n" + "\n".join(failures))
 
 
+class TestEnglishBatchTranslations:
+    """Test batch English translations with real language packages."""
+    
+    def test_batch_all_phrases(self, english_to_x_pairs):
+        """Test batch English→X translations with all test phrases."""
+        if not english_to_x_pairs:
+            pytest.skip("No English→X pairs available")
+            
+        test_phrases = list(TEST_PHRASES.values())
+        failures = []
+        
+        for i, pair in enumerate(english_to_x_pairs, 1):
+            from_name = pair['from_name']
+            to_name = pair['to_name']
+            translation = pair['translation']
+            
+            print(f"\n[{i}/{len(english_to_x_pairs)}] Batch {from_name} → {to_name}")
+            
+            try:
+                # Test batch translation
+                batch_results = translation.translate_batch(test_phrases)
+                assert len(batch_results) == len(test_phrases), "Batch result count mismatch"
+                
+                # Verify all results are non-empty
+                for j, (phrase, result) in enumerate(zip(test_phrases, batch_results)):
+                    assert result and len(result.strip()) > 0, f"Empty result for phrase {j}"
+                
+                print(f"  ✓ Batch translated {len(test_phrases)} phrases")
+                for phrase, result in zip(test_phrases, batch_results):
+                    truncated_phrase = phrase[:30] + "..." if len(phrase) > 30 else phrase
+                    truncated_result = result[:30] + "..." if len(result) > 30 else result
+                    print(f"    '{truncated_phrase}' → '{truncated_result}'")
+                    
+            except Exception as e:
+                error_msg = f"{from_name} → {to_name}: {str(e)}"
+                failures.append(error_msg)
+                print(f"  ✗ FAILED: {e}")
+        
+        if failures:
+            pytest.fail(f"{len(failures)} batch English→X pairs failed:\n" + "\n".join(failures))
+        
+        print(f"\n🎉 All {len(english_to_x_pairs)} batch English→X pairs working!")
+
+    def test_batch_round_trip(self, english_to_x_pairs, all_translation_packages):
+        """Test batch English→X→English round-trip translations."""
+        if not english_to_x_pairs:
+            pytest.skip("No English→X pairs available")
+        
+        # Create lookup for reverse translations
+        reverse_lookup = {}
+        for pkg in all_translation_packages:
+            if pkg['to_code'] == 'en':
+                reverse_lookup[pkg['from_code']] = pkg['translation']
+        
+        test_phrases = list(TEST_PHRASES.values())
+        failures = []
+        
+        for i, pair in enumerate(english_to_x_pairs, 1):
+            from_name = pair['from_name']
+            to_name = pair['to_name']
+            to_code = pair['to_code']
+            en_to_x = pair['translation']
+            x_to_en = reverse_lookup.get(to_code)
+            
+            if not x_to_en:
+                print(f"\n[{i}/{len(english_to_x_pairs)}] Skipping EN→{to_name}→EN (no reverse)")
+                continue
+                
+            print(f"\n[{i}/{len(english_to_x_pairs)}] Batch EN→{to_name}→EN round-trip")
+            
+            try:
+                # Step 1: Batch English → X
+                x_results = en_to_x.translate_batch(test_phrases)
+                assert len(x_results) == len(test_phrases), "Forward batch count mismatch"
+                
+                # Verify forward results are non-empty
+                for j, result in enumerate(x_results):
+                    assert result and len(result.strip()) > 0, f"Empty forward result for phrase {j}"
+                
+                # Step 2: Batch X → English
+                en_results = x_to_en.translate_batch(x_results)
+                assert len(en_results) == len(x_results), "Reverse batch count mismatch"
+                
+                # Verify reverse results are non-empty
+                for j, result in enumerate(en_results):
+                    assert result and len(result.strip()) > 0, f"Empty reverse result for phrase {j}"
+                
+                print(f"  ✓ Batch round-trip completed for {len(test_phrases)} phrases")
+                for orig, x_trans, en_trans in zip(test_phrases, x_results, en_results):
+                    orig_short = orig[:20] + "..." if len(orig) > 20 else orig
+                    x_short = x_trans[:20] + "..." if len(x_trans) > 20 else x_trans
+                    en_short = en_trans[:20] + "..." if len(en_trans) > 20 else en_trans
+                    print(f"    '{orig_short}' → '{x_short}' → '{en_short}'")
+                
+            except Exception as e:
+                error_msg = f"EN→{to_name}→EN: {str(e)}"
+                failures.append(error_msg)
+                print(f"  ✗ FAILED: {e}")
+        
+        if failures:
+            pytest.fail(f"{len(failures)} batch round-trip translations failed:\n" + "\n".join(failures))
+        
+        print(f"\n🎉 All batch round-trip translations completed!")
+
+
 class TestBidirectionalRoundTrip:
     """Test English→X→English round-trip translations."""
     
