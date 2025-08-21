@@ -76,6 +76,31 @@ class ITranslation:
         """
         raise NotImplementedError()
 
+    def translate_batch(self, input_texts: List[str]) -> List[str]:
+        """Translates multiple strings in a single batch operation
+
+        Args:
+            input_texts: List of texts to be translated.
+
+        Returns:
+            List of translated texts in same order as input.
+        """
+        return [self.translate(text) for text in input_texts]
+
+    def hypotheses_batch(
+        self, input_texts: List[str], num_hypotheses: int = 4
+    ) -> List[List[Hypothesis]]:
+        """Returns hypotheses for multiple texts in a batch
+
+        Args:
+            input_texts: List of texts to be translated.
+            num_hypotheses: Number of hypothetical results expected per text.
+
+        Returns:
+            List of lists of translation hypotheses, one list per input text.
+        """
+        return [self.hypotheses(text, num_hypotheses) for text in input_texts]
+
     @staticmethod
     def split_into_paragraphs(input_text: str) -> list[str]:
         """Splits input_text into paragraphs and returns a list of paragraphs.
@@ -210,6 +235,91 @@ class PackageTranslation(ITranslation):
         info("hypotheses_to_return:", hypotheses_to_return)
         return hypotheses_to_return
 
+    def translate_batch(self, input_texts: List[str]) -> List[str]:
+        """Process multiple texts in a single CTranslate2 batch"""
+        if self.translator is None:
+            model_path = str(self.pkg.package_path / "model")
+            self.translator = ctranslate2.Translator(
+                model_path,
+                device=settings.device,
+                inter_threads=settings.inter_threads,
+                intra_threads=settings.intra_threads,
+            )
+
+        all_sentences = []
+        text_sentence_mapping = []
+
+        for text_idx, text in enumerate(input_texts):
+            sentences = self.sentencizer.split_sentences(text)
+            text_sentence_mapping.append((len(all_sentences), len(sentences)))
+            all_sentences.extend(sentences)
+
+        info(
+            "batch_processing",
+            f"{len(input_texts)} texts, {len(all_sentences)} total sentences",
+        )
+
+        # Process all sentences in one batch
+        sentence_hypotheses = apply_packaged_translation_batch(
+            self.pkg, all_sentences, self.translator, num_hypotheses=1
+        )
+
+        # Reassemble results back to original text structure
+        results = []
+        for start_idx, sentence_count in text_sentence_mapping:
+            text_hypotheses = sentence_hypotheses[
+                start_idx : start_idx + sentence_count
+            ]
+            combined_result = " ".join([h[0].value for h in text_hypotheses])
+            results.append(combined_result)
+
+        info("batch_results", f"Processed {len(results)} texts")
+        return results
+
+    def hypotheses_batch(
+        self, input_texts: List[str], num_hypotheses: int = 4
+    ) -> List[List[Hypothesis]]:
+        """Returns hypotheses for multiple texts in a batch"""
+        if self.translator is None:
+            model_path = str(self.pkg.package_path / "model")
+            self.translator = ctranslate2.Translator(
+                model_path,
+                device=settings.device,
+                inter_threads=settings.inter_threads,
+                intra_threads=settings.intra_threads,
+            )
+
+        all_sentences = []
+        text_sentence_mapping = []
+
+        for text_idx, text in enumerate(input_texts):
+            sentences = self.sentencizer.split_sentences(text)
+            text_sentence_mapping.append((len(all_sentences), len(sentences)))
+            all_sentences.extend(sentences)
+
+        # Process all sentences in one batch
+        sentence_hypotheses = apply_packaged_translation_batch(
+            self.pkg, all_sentences, self.translator, num_hypotheses
+        )
+
+        # Reassemble results back to original text structure
+        results = []
+        for start_idx, sentence_count in text_sentence_mapping:
+            text_hypotheses = sentence_hypotheses[
+                start_idx : start_idx + sentence_count
+            ]
+
+            # Combine hypotheses from all sentences in this text
+            combined_hypotheses = []
+            for i in range(num_hypotheses):
+                combined_text = " ".join([h[i].value for h in text_hypotheses])
+                combined_score = sum([h[i].score for h in text_hypotheses])
+                combined_hypotheses.append(Hypothesis(combined_text, combined_score))
+
+            results.append(combined_hypotheses)
+
+        return results
+
 
 class IdentityTranslation(ITranslation):
     """A Translation that doesn't modify input_text."""
@@ -334,6 +444,20 @@ class CachedTranslation(ITranslation):
                 hypotheses_to_return[i] = Hypothesis(value, score)
             hypotheses_to_return[i].value = hypotheses_to_return[i].value.lstrip("\n")
         return hypotheses_to_return
+
+    def translate_batch(self, input_texts: List[str]) -> List[str]:
+        """Batch translation with caching support"""
+        # For now, use the underlying batch translation directly
+        # In the future, we could add batch-aware caching
+        return self.underlying.translate_batch(input_texts)
+
+    def hypotheses_batch(
+        self, input_texts: List[str], num_hypotheses: int = 4
+    ) -> List[List[Hypothesis]]:
+        """Batch hypotheses with caching support"""
+        # For now, use the underlying batch translation directly
+        # In the future, we could add batch-aware caching
+        return self.underlying.hypotheses_batch(input_texts, num_hypotheses)
 
 
 class RemoteTranslation(ITranslation):
@@ -528,6 +652,84 @@ def apply_packaged_translation(
     return value_hypotheses
 
 
+def apply_packaged_translation_batch(
+    pkg: Package,
+    sentences: List[str],
+    translator: Translator,
+    num_hypotheses: int = 4,
+) -> List[List[Hypothesis]]:
+    """Process multiple sentences in optimal batches
+
+    TODO: Refactor to eliminate code duplication with apply_packaged_translation.
+    Both functions share tokenization, target_prefix handling, CTranslate2 parameters,
+    result decoding, and hypothesis creation logic. Consider refactoring 
+    apply_packaged_translation to use this batch function internally.
+
+    Args:
+        pkg: The package that provides the translation.
+        sentences: List of sentences to be translated.
+        translator: The CTranslate2 Translator
+        num_hypotheses: The number of hypotheses to generate per sentence
+
+    Returns:
+        List of lists of translation hypotheses, one list per input sentence.
+    """
+    info("apply_packaged_translation_batch", f"{len(sentences)} sentences")
+
+    tokenized = [pkg.tokenizer.encode(sentence) for sentence in sentences]
+    info("tokenized", f"{len(tokenized)} tokenized sentences")
+
+    # Single batch translation call
+    target_prefix = None
+    if pkg.target_prefix != "":
+        target_prefix = [[pkg.target_prefix]] * len(tokenized)
+
+    translated_batches = translator.translate_batch(
+        tokenized,
+        target_prefix=target_prefix,
+        replace_unknowns=True,
+        max_batch_size=32,
+        beam_size=max(num_hypotheses, 4),
+        num_hypotheses=num_hypotheses,
+        length_penalty=0.2,
+        return_scores=True,
+    )
+    info("translated_batches", translated_batches)
+
+    # Process results back to individual sentence hypotheses
+    # translated_batches[i] contains all hypotheses for input sentence i
+    results = []
+    for sentence_idx, (sentence, batch_result) in enumerate(
+        zip(sentences, translated_batches)
+    ):
+        sentence_hypotheses = []
+
+        # Extract each hypothesis for this sentence
+        for hyp_idx in range(num_hypotheses):
+            if hyp_idx < len(batch_result.hypotheses):
+                translated_tokens = batch_result.hypotheses[hyp_idx]
+                score = batch_result.scores[hyp_idx]
+
+                # Decode tokens back to text
+                value = pkg.tokenizer.decode(translated_tokens)
+
+                # Clean up value (remove prefix, leading spaces)
+                if pkg.target_prefix != "" and value.startswith(pkg.target_prefix):
+                    value = value[len(pkg.target_prefix) :]
+                if len(value) > 0 and value[0] == " ":
+                    value = value[1:]
+
+                sentence_hypotheses.append(Hypothesis(value, score))
+            else:
+                # If fewer hypotheses than requested, add empty hypothesis
+                sentence_hypotheses.append(Hypothesis("", 0.0))
+
+        results.append(sentence_hypotheses)
+
+    info("batch_results", f"{len(results)} sentence results")
+    return results
+
+
 class InstalledTranslate:
     """
     Global storage of instances of the CachedTranslation class by unique keys.
@@ -717,3 +919,18 @@ def translate(q: str, from_code: str, to_code: str) -> str:
     """
     translation = get_translation_from_codes(from_code, to_code)
     return translation.translate(q)
+
+
+def translate_batch(texts: List[str], from_code: str, to_code: str) -> List[str]:
+    """Translate multiple texts efficiently in batches
+
+    Args:
+        texts: List of texts to translate
+        from_code: Source language ISO 639 code
+        to_code: Target language ISO 639 code
+
+    Returns:
+        List of translated texts in same order as input
+    """
+    translation = get_translation_from_codes(from_code, to_code)
+    return translation.translate_batch(texts)
