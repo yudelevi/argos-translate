@@ -688,7 +688,7 @@ def apply_packaged_translation_batch(
         tokenized,
         target_prefix=target_prefix,
         replace_unknowns=True,
-        max_batch_size=32,
+        max_batch_size=settings.batch_size,
         beam_size=max(num_hypotheses, 4),
         num_hypotheses=num_hypotheses,
         length_penalty=0.2,
